@@ -16,24 +16,29 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 * @notice Warpcast: https://warpcast.com/apex777
 */
 
+
+/// IERC4906 Metadata Update Event - When called emits an event to signal that the metadata for a token has been updated.
+/// This is how Opensea knows to update the metadata for a token as soon as it changes.
 interface IERC4906 {
     event MetadataUpdate(uint256 _tokenId);
 }
 
+// importing the usual suspects but also the WaveData contract and IERC4906
 contract Waveforms is Ownable, ReentrancyGuard, ERC721A, IERC4906, WaveData {
     using Strings for uint256;
 
     address public deployer;
-    address public safe = payable(0x3415CD5FcAa35F986c8129c7a80E3AF75e5cF262);
     uint256 public mintPrice = 0.001 ether;
     bool public mintEnabled = false;
 
+    // this mapping is used to store the address of the person who minted the token
     mapping(uint256 => address) public mintedBy;
 
     constructor() Ownable(msg.sender) ERC721A("Waveforms", "WAVE") {
         deployer = msg.sender;
     }
 
+    /// First token will start at 1 instead of 0
     function _startTokenId() internal pure override returns (uint256) {
         return 1;
     }
@@ -44,29 +49,31 @@ contract Waveforms is Ownable, ReentrancyGuard, ERC721A, IERC4906, WaveData {
         require(mintEnabled, "Mint not started");
         require(msg.value == quantity * cost, "Please send the exact ETH amount");
         require(quantity > 0, "Quantity must be greater than 0");
+
+        /// As we are storing the minter for each token, and if people mint multiple tokens at once we need to store the minter for each token
         uint256 startTokenID = _startTokenId() + _totalMinted();
         uint256 mintUntilTokenID = quantity + startTokenID;
 
+        /// this is where the storage of the minter happens
         for (uint256 tokenId = startTokenID; tokenId < mintUntilTokenID; tokenId++) {
             mintedBy[tokenId] = msg.sender;
         }
-        _safeMint(msg.sender, quantity);
 
-        // Transfer the ETH to safe
-        (bool success,) = safe.call{value: msg.value}("");
-        require(success, "Transfer failed.");
+        /// actual minting of the tokens
+        _safeMint(msg.sender, quantity);
     }
 
+    /// This is the function marketplaces / dapps call when a token is minted to get the metadata
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         require(_exists(tokenId), "Token does not exist");
 
-        // Get image
+        // Get image data of the svg, this is the main function that generates the svg
         string memory image = buildSVG(tokenId);
 
-        // Encode SVG data to base64
+        // convert the image to base64
         string memory base64Image = Base64.encode(bytes(image));
 
-        // Build JSON metadata
+        // Build JSON metadata => name, description, attributes, image etc
         string memory json = string(
             abi.encodePacked(
                 '{"name":"Waveforms #',
@@ -79,17 +86,21 @@ contract Waveforms is Ownable, ReentrancyGuard, ERC721A, IERC4906, WaveData {
             )
         );
 
-        // Encode JSON data to base64
+        // Encode JSON data to base64 - inside this is also the image base64
         string memory base64Json = Base64.encode(bytes(json));
 
-        // Construct final URI
+        // Construct final URI and tell the caller its a json and its base64 encoded
         return string(abi.encodePacked("data:application/json;base64,", base64Json));
     }
 
+    /// doesn't need to be public, but it is for testing purposes
     function buildSVG(uint256 tokenId) public view returns (string memory) {
         require(_exists(tokenId), "Token does not exist");
 
+        // get the owner of the token
         address holder = ownerOf(tokenId);
+
+        /// this is where we call the WaveData contract...
         string memory svg = addressToSVG(holder);
 
         return svg;
@@ -108,16 +119,20 @@ contract Waveforms is Ownable, ReentrancyGuard, ERC721A, IERC4906, WaveData {
         );
     }
 
+    /// When a Waveform is transferred (and also minted) we want to tell opensea to update the image
+    /// event is called here for each token that is transferred if there are multiple
     function _afterTokenTransfers(address, address, uint256 startTokenId, uint256 quantity) internal virtual override {
         for (uint256 i = 0; i < quantity; i++) {
             emit MetadataUpdate(startTokenId + i);
         }
     }
 
+    // turn on and off minting
     function toggleMinting() external onlyOwner {
         mintEnabled = !mintEnabled;
     }
 
+    // withdraw funds from contract - only owner
     function withdraw() external onlyOwner nonReentrant {
         (bool success,) = msg.sender.call{value: address(this).balance}("");
         require(success, "Transfer failed.");
